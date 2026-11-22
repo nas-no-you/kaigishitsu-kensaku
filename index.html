@@ -28,4 +28,134 @@ input,select{flex:1;min-width:0;width:100%;font:inherit;font-size:15px;padding:8
 .day[open]>summary::after{content:"▾"}
 .day>summary small{font-weight:400;color:var(--mut);margin-left:8px;font-size:12px}
 .day[open]>summary{margin-bottom:6px}
-.tools{display:flex;gap:8px;justify-content:flex-end;margin:4
+.tools{display:flex;gap:8px;justify-content:flex-end;margin:4px 0}
+.item{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:6px}
+.hall{font-size:15px;font-weight:600}
+.room{margin-top:6px;font-size:13px}
+.badges{margin-top:3px;display:flex;flex-wrap:wrap;gap:5px}
+.b{background:var(--okbg);color:var(--ok);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600}
+.b.tel{background:var(--acbg);color:var(--ac)}
+.empty,.err{text-align:center;color:var(--mut);padding:30px 0}
+.count{font-size:13px;color:var(--mut);margin:4px 2px}
+.more{display:block;width:100%;margin:12px 0;padding:12px;font:inherit;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--ac)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>会議室 空き検索</h1>
+  <div class="sub" id="updated"></div>
+  <div class="panel">
+    <div class="lbl">区</div>
+    <div class="chips">
+      <button class="chip on" disabled>品川区</button>
+      <button class="chip" disabled>目黒区(準備中)</button>
+      <button class="chip" disabled>大田区(準備中)</button>
+      <button class="chip" disabled>渋谷区(準備中)</button>
+    </div>
+    <div class="lbl">期間</div>
+    <div class="row"><input type="date" id="from"><span>〜</span><input type="date" id="to"></div>
+    <div class="lbl">曜日</div>
+    <div class="chips" id="dow"></div>
+    <div class="lbl">時間帯</div>
+    <div class="chips" id="slot"></div>
+    <div class="lbl">施設名で探す</div>
+    <input type="search" id="q" placeholder="例:荏原、文化センター">
+    <div class="lbl">館</div>
+    <select id="hall"></select>
+    <div class="lbl">オプション</div>
+    <div class="chips">
+      <button class="chip" id="school">学校施設を含める</button>
+      <button class="chip" id="online">オンライン予約可のみ</button>
+    </div>
+  </div>
+  <div class="tools"><button class="chip" id="openall">すべて開く</button><button class="chip" id="closeall">すべて閉じる</button></div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+</div>
+<script>
+const SL=["午前","午後","夜間"],DW=["日","月","火","水","木","金","土"];
+const ymd=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+const parse=s=>{const [y,m,d]=s.split("-").map(Number);return new Date(y,m-1,d)};
+const tm=t=>t.replace(/(\d+)時(\d+)分～(\d+)時(\d+)分/,(a,h1,m1,h2,m2)=>`${+h1}:${m1}–${+h2}:${m2}`);
+const isSchool=h=>/(学校|学園)$/.test(h);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const st={from:"",to:"",dow:new Set([0,1,2,3,4,5,6]),slot:new Set(SL),q:"",hall:"",school:false,online:false,limit:7};
+let DATA=[];
+const opened=new Set();
+
+function chips(el,items,set,label){
+  el.innerHTML="";
+  items.forEach(v=>{const b=document.createElement("button");b.className="chip on";b.textContent=label(v);
+    b.onclick=()=>{set.has(v)?set.delete(v):set.add(v);b.classList.toggle("on",set.has(v));st.limit=7;render()};el.appendChild(b)});
+}
+function fillHalls(){
+  const sel=document.getElementById("hall");
+  const hs=[...new Set(DATA.filter(x=>st.school||!isSchool(x.h)).map(x=>x.h))].sort((a,b)=>a.localeCompare(b,"ja"));
+  if(st.hall&&!hs.includes(st.hall))st.hall="";
+  sel.innerHTML='<option value="">すべての館</option>'+hs.map(h=>`<option${h===st.hall?" selected":""}>${esc(h)}</option>`).join("");
+}
+function render(){
+  const q=st.q.trim();
+  const rows=DATA.filter(x=>(!st.from||x.d>=st.from)&&(!st.to||x.d<=st.to)
+    &&st.dow.has(parse(x.d).getDay())&&st.slot.has(x.s)
+    &&(st.school||!isSchool(x.h))&&(!st.online||x.online)
+    &&(!st.hall||x.h===st.hall)&&(!q||(x.h+x.r).includes(q)));
+  const g={};
+  rows.forEach(x=>{
+    const H=(g[x.d]=g[x.d]||{});
+    const h=(H[x.h]=H[x.h]||{url:x.url,rooms:{}});
+    (h.rooms[x.r]=h.rooms[x.r]||[]).push(x);
+  });
+  const dates=Object.keys(g).sort();
+  document.getElementById("count").textContent=dates.length?`空き ${rows.length} 枠(${dates.length}日)`:"";
+  const list=document.getElementById("list");
+  if(!dates.length){list.innerHTML='<div class="empty">条件に合う空きはありません</div>';return}
+  const shown=dates.slice(0,st.limit);
+  list.innerHTML=shown.map(d=>{
+    const dt=parse(d);
+    const halls=Object.keys(g[d]).sort((a,b)=>a.localeCompare(b,"ja")).map(h=>{
+      const o=g[d][h];
+      const rooms=Object.keys(o.rooms).sort().map(r=>{
+        const bs=o.rooms[r].sort((a,b)=>a.t.localeCompare(b.t)).map(x=>`<span class="b${x.online?"":" tel"}">${x.s} ${esc(tm(x.t))}${x.online?"":" ☎"}</span>`).join("");
+        return `<div class="room">${esc(r)}<div class="badges">${bs}</div></div>`;
+      }).join("");
+      return `<a class="item" href="${esc(o.url)}" target="_blank" rel="noopener"><div class="hall">${esc(h)}</div>${rooms}</a>`;
+    }).join("");
+    const n=Object.values(g[d]).reduce((a,o)=>a+Object.values(o.rooms).reduce((b,v)=>b+v.length,0),0);
+    return `<details class="day" data-d="${d}"${opened.has(d)?" open":""}><summary><span>${dt.getMonth()+1}月${dt.getDate()}日(${DW[dt.getDay()]})<small>${Object.keys(g[d]).length}館・${n}枠</small></span></summary>${halls}</details>`;
+  }).join("")+(dates.length>shown.length?`<button class="more" id="more">さらに表示(残り${dates.length-shown.length}日)</button>`:"");
+  const m=document.getElementById("more");
+  if(m)m.onclick=()=>{st.limit+=7;render()};
+  list.querySelectorAll("details.day").forEach(el=>el.addEventListener("toggle",()=>{el.open?opened.add(el.dataset.d):opened.delete(el.dataset.d)}));
+}
+async function init(){
+  try{
+    const r=await fetch("data.json",{cache:"no-store"});
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    DATA=j.slots;
+    document.getElementById("updated").textContent="最終更新:"+j.updated;
+  }catch(e){
+    document.getElementById("list").innerHTML='<div class="err">データを読み込めませんでした</div>';
+    return;
+  }
+  const t=new Date(),e=new Date();e.setDate(t.getDate()+30);
+  st.from=ymd(t);st.to=ymd(e);
+  const f=document.getElementById("from"),to=document.getElementById("to");
+  f.value=st.from;to.value=st.to;
+  f.onchange=()=>{st.from=f.value;st.limit=7;render()};
+  to.onchange=()=>{st.to=to.value;st.limit=7;render()};
+  chips(document.getElementById("dow"),[1,2,3,4,5,6,0],st.dow,v=>DW[v]);
+  chips(document.getElementById("slot"),SL,st.slot,v=>v);
+  document.getElementById("q").oninput=ev=>{st.q=ev.target.value;st.limit=7;render()};
+  document.getElementById("hall").onchange=ev=>{st.hall=ev.target.value;st.limit=7;render()};
+  document.getElementById("school").onclick=ev=>{st.school=!st.school;ev.target.classList.toggle("on",st.school);fillHalls();st.limit=7;render()};
+  document.getElementById("online").onclick=ev=>{st.online=!st.online;ev.target.classList.toggle("on",st.online);st.limit=7;render()};
+  document.getElementById("openall").onclick=()=>document.querySelectorAll("details.day").forEach(e=>e.open=true);
+  document.getElementById("closeall").onclick=()=>document.querySelectorAll("details.day").forEach(e=>e.open=false);
+  fillHalls();render();
+}
+init();
+</script>
+</body>
+</html>
