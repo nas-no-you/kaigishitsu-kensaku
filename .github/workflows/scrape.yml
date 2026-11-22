@@ -1,0 +1,141 @@
+name: scrape
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 21,3,9 * * *"
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - run: |
+          python - <<'EOF'
+          import json, re, sys, datetime, traceback
+          from zoneinfo import ZoneInfo
+          from playwright.sync_api import sync_playwright
+
+          TOP = "https://www.cm9.eprs.jp/shinagawa/web/"
+          PURPOSE = "31000000_31000100"
+          DAYS_AHEAD = 63
+          JST = ZoneInfo("Asia/Tokyo")
+          log = []
+
+          def L(*a):
+              s = " ".join(str(x) for x in a)
+              print(s)
+              log.append(s)
+
+          def slot_of(t):
+              m = re.match(r"(\d+)時", t)
+              h = int(m.group(1)) if m else 0
+              return "午前" if h < 12 else ("午後" if h < 17 else "夜間")
+
+          EXTRACT = """() => [...document.querySelectorAll('tr[id]')]
+            .filter(r => r.querySelector('td.mansion'))
+            .map(r => ({
+              id: r.id,
+              h: r.querySelector('td.mansion').innerText.trim(),
+              r: r.querySelector('td.facility').innerText.trim(),
+              t: (r.querySelector('.timezone-text') || {}).innerText || '',
+              b: !!r.querySelector('button.btn-go')
+            }))"""
+
+          def search_area(pg, area, start):
+              pg.goto(TOP, wait_until="networkidle")
+              pg.select_option("#bname", area)
+              pg.select_option("#purpose", PURPOSE)
+              pg.evaluate("document.getElementById('thisweek').click()")
+              pg.evaluate("d=>{const e=document.getElementById('daystart');e.value=d;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))}", start)
+              pg.locator("button[onclick*='gRsvWOpeInstSrchVacantAction']").first.click()
+              pg.wait_for_load_state("networkidle")
+              pg.wait_for_timeout(1500)
+              pg.locator("a.nav-link:has-text('日付順')").first.click()
+              pg.wait_for_load_state("networkidle")
+              pg.wait_for_timeout(1500)
+              rows = {}
+              for _ in range(200):
+                  for r in pg.evaluate(EXTRACT):
+                      rows[r["id"]] = r
+                  btn = pg.locator("#unreserved-moreBtn")
+                  if btn.count() == 0 or not btn.first.is_visible():
+                      break
+                  n = len(rows)
+                  btn.first.click()
+                  pg.wait_for_timeout(1200)
+                  for r in pg.evaluate(EXTRACT):
+                      rows[r["id"]] = r
+                  if len(rows) == n:
+                      break
+              more = pg.locator("#unreserved-moreBtn").count() > 0 and pg.locator("#unreserved-moreBtn").first.is_visible()
+              return list(rows.values()), more
+
+          slots = {}
+          today = datetime.datetime.now(JST).date()
+          END = today + datetime.timedelta(days=DAYS_AHEAD)
+          one = datetime.timedelta(days=1)
+          with sync_playwright() as p:
+              b = p.chromium.launch()
+              ctx = b.new_context(viewport={"width": 412, "height": 900}, locale="ja-JP")
+              pg = ctx.new_page()
+              pg.set_default_timeout(45000)
+              pg.goto(TOP, wait_until="networkidle")
+              areas = pg.locator("#bname").evaluate("e=>[...e.options].filter(o=>o.value.endsWith('_0')&&o.value!=='0').map(o=>[o.value,o.text.trim()])")
+              L("areas", areas)
+              for val, name in areas:
+                  cur = today
+                  count = 0
+                  while cur <= END and count < 60:
+                      count += 1
+                      try:
+                          rows, more = search_area(pg, val, cur.isoformat())
+                      except Exception:
+                          L("ERROR", name, cur, traceback.format_exc()[-600:])
+                          cur += 7 * one
+                          continue
+                      dates = sorted({r["id"][:8] for r in rows})
+                      trunc = len(rows) >= 100 or more
+                      L("OK", name, cur, "rows", len(rows), "dates", (dates[0] + "-" + dates[-1]) if dates else "none", "TRUNCATED" if trunc else "")
+                      for r in rows:
+                          m = re.match(r"(\d{4})(\d{2})(\d{2})_(\d+)_(\d+)_(\d+)", r["id"])
+                          if not m:
+                              continue
+                          slots[m.group(0)] = {
+                              "w": "品川区", "h": r["h"], "r": r["r"],
+                              "d": f"{m.group(1)}-{m.group(2)}-{m.group(3)}",
+                              "s": slot_of(r["t"]), "t": r["t"],
+                              "url": TOP, "online": r["b"],
+                          }
+                      if trunc and dates:
+                          last = datetime.datetime.strptime(dates[-1], "%Y%m%d").date()
+                          if last <= cur:
+                              L("WARN one day over limit", name, cur)
+                              cur = cur + one
+                          else:
+                              cur = last
+                      else:
+                          cur = cur + 7 * one
+                      pg.wait_for_timeout(2000)
+              b.close()
+
+          out = sorted(slots.values(), key=lambda x: (x["d"], x["h"], x["r"], x["t"]))
+          L("TOTAL", len(out))
+          open("scrape_log.txt", "w", encoding="utf-8").write("\n".join(log))
+          if not out:
+              sys.exit(1)
+          now = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+          json.dump({"updated": now, "slots": out}, open("data.json", "w", encoding="utf-8"), ensure_ascii=False)
+          EOF
+      - if: always()
+        run: |
+          git config user.name bot
+          git config user.email bot@example.com
+          git add data.json scrape_log.txt
+          git commit -m "update data" || true
+          git push
