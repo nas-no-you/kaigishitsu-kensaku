@@ -178,4 +178,40 @@ function render(){
       return `<a class="item" href="${esc(o.url)}" target="_blank" rel="noopener"><div class="hall">${esc(h)}</div>${rooms}</a>`;
     }).join("");
     const n=Object.values(g[d]).reduce((a,o)=>a+Object.values(o.rooms).reduce((b,v)=>b+v.length,0),0);
-    return `<details class="day${hol?" hol":""}" data-d="${d}"${opened.has(d)?" open":""}><summary><span><span class="t">${dt.getMonth()+1}月${dt.getDate()}日(${DW[dt.getDay()]}${hol?"・祝":""})</span><small>${Object.keys(g[d]).le
+    return `<details class="day${hol?" hol":""}" data-d="${d}"${opened.has(d)?" open":""}><summary><span><span class="t">${dt.getMonth()+1}月${dt.getDate()}日(${DW[dt.getDay()]}${hol?"・祝":""})</span><small>${Object.keys(g[d]).length}館・${n}枠</small></span></summary>${halls}</details>`;
+  }).join("")+(dates.length>shown.length?`<button class="more" id="more">さらに表示(残り${dates.length-shown.length}日)</button>`:"");
+  const m=document.getElementById("more");
+  if(m)m.onclick=()=>{st.limit+=7;render()};
+  list.querySelectorAll("details.day").forEach(el=>el.addEventListener("toggle",()=>{el.open?opened.add(el.dataset.d):opened.delete(el.dataset.d)}));
+}
+async function init(){
+  try{
+    const r=await fetch("data.json",{cache:"no-store"});
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    DATA=j.slots;
+    document.getElementById("updated").textContent="最終更新:"+j.updated;
+  }catch(e){
+    document.getElementById("list").innerHTML='<div class="err">データを読み込めませんでした</div>';
+    return;
+  }
+  const t=new Date(),e=new Date();e.setDate(t.getDate()+30);
+  st.from=ymd(t);st.to=ymd(e);
+  const f=document.getElementById("from"),to=document.getElementById("to");
+  f.value=st.from;to.value=st.to;
+  f.onchange=()=>{st.from=f.value;st.limit=7;render()};
+  to.onchange=()=>{st.to=to.value;st.limit=7;render()};
+  buildDow();buildPresets();
+  chips(document.getElementById("slot"),SL,st.slot,v=>v);
+  document.getElementById("q").oninput=ev=>{st.q=ev.target.value;st.limit=7;render()};
+  document.getElementById("hall").onchange=ev=>{st.hall=ev.target.value;st.limit=7;render()};
+  document.getElementById("school").onclick=ev=>{st.school=!st.school;ev.target.classList.toggle("on",st.school);fillHalls();st.limit=7;render()};
+  document.getElementById("online").onclick=ev=>{st.online=!st.online;ev.target.classList.toggle("on",st.online);st.limit=7;render()};
+  document.getElementById("openall").onclick=()=>document.querySelectorAll("details.day").forEach(e=>e.open=true);
+  document.getElementById("closeall").onclick=()=>document.querySelectorAll("details.day").forEach(e=>e.open=false);
+  fillHalls();render();
+}
+init();
+</script>
+</body>
+</html>
